@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 import streamlit.components.v1 as components
 from streamlit_gsheets import GSheetsConnection
 
@@ -224,6 +225,24 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover {
 }
 </style>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# FUNÇÃO PARA EXTRAIR APENAS NÚMEROS (TRATAR CX, UND, KG)
+# ─────────────────────────────────────────────
+def extrair_numero_quantidade(valor):
+    """
+    Tenta converter o valor para número ignorando textos (ex: '01 cx' -> 1).
+    Se o valor for vazio, puramente texto ou erro, retorna 0.
+    """
+    if pd.isna(valor) or valor == "":
+        return 0
+    # Transforma em string para tratar com Regex
+    v_str = str(valor)
+    # Procura a primeira sequência de dígitos (com ou sem ponto decimal)
+    match = re.search(r'\d+', v_str)
+    if match:
+        return int(match.group())
+    return 0
 
 # ─────────────────────────────────────────────
 # CONSTANTES E PRODUTOS INICIAIS DA MATRIZ
@@ -455,7 +474,7 @@ def carregar_pedidos():
     if df_pedidos.empty or "Código" not in df_pedidos.columns:
         df_init = df_cat[["Fornecedor", "Código", "Descrição"]].copy()
         for loja in LOJAS:
-            df_init[loja] = 0
+            df_init[loja] = "0" # Agora inicializamos como string para suportar textos da loja
         if not df_init.empty:
             conn.update(worksheet=WS_PEDIDOS, data=df_init)
         return df_init
@@ -467,11 +486,11 @@ def carregar_pedidos():
         df_pedidos["Código"] = pd.to_numeric(df_pedidos["Código"], errors='coerce').fillna(0).astype(int)
 
     for loja in LOJAS:
-        # Garante que a coluna de quantidade existe
         if loja in df_pedidos.columns:
-            df_pedidos[loja] = pd.to_numeric(df_pedidos[loja], errors='coerce').fillna(0).astype(int)
+            # Mantém como texto para preservar as letras
+            df_pedidos[loja] = df_pedidos[loja].fillna("0").astype(str)
         else:
-            df_pedidos[loja] = 0
+            df_pedidos[loja] = "0"
 
     return df_pedidos
 
@@ -570,7 +589,9 @@ with st.sidebar:
 
     df_ped = carregar_pedidos()
     if not df_ped.empty and set(LOJAS).issubset(df_ped.columns):
-        total_preenchidos = (df_ped[LOJAS] > 0).any(axis=1).sum()
+        # Transforma tudo para numero (limpando letras) para ver se tem item preenchido
+        temp_sum = df_ped[LOJAS].applymap(extrair_numero_quantidade)
+        total_preenchidos = (temp_sum > 0).any(axis=1).sum()
     else:
         total_preenchidos = 0
 
@@ -608,7 +629,7 @@ def modal_zerar_pedidos():
             df_main = carregar_pedidos()
             for loja in LOJAS:
                 if loja in df_main.columns:
-                    df_main[loja] = 0
+                    df_main[loja] = "0"
             salvar_pedidos(df_main)
             
             df_obs = carregar_obs()
@@ -638,7 +659,9 @@ if perfil_navegacao == "Separação e Fechamento":
             st.warning("A base de pedidos está vazia. Cadastre produtos no Catálogo primeiro.")
             st.stop()
 
-        df_base["TOTAL GERAL"] = df_base[LOJAS].sum(axis=1)
+        # Cria uma cópia com apenas os valores numéricos para poder somar o Total Geral
+        df_num = df_base[LOJAS].applymap(extrair_numero_quantidade)
+        df_base["TOTAL GERAL"] = df_num.sum(axis=1)
 
         cols_order = ["Fornecedor", "Código", "Descrição"] + LOJAS + ["TOTAL GERAL"]
         df_exibir = df_base[cols_order]
@@ -652,7 +675,6 @@ if perfil_navegacao == "Separação e Fechamento":
             st.caption("⚠️ *Aviso: Salve suas alterações antes de limpar a busca, para não perder as edições atuais.*")
         # ----------------------------------
 
-        # Cálculo Dinâmico de Altura
         altura_dinamica = min(600, max(100, int(len(df_exibir) * 35.5) + 42))
 
         col_cfg = {
@@ -661,8 +683,9 @@ if perfil_navegacao == "Separação e Fechamento":
             "Descrição":   st.column_config.TextColumn("Produto", disabled=True),
             "TOTAL GERAL": st.column_config.NumberColumn("TOTAL ▶️", width=80, format="%d", disabled=True),
         }
+        # As colunas de lojas agora são TextColumn para permitirem ver as letras e números que as lojas digitaram
         for loja, novo_nome in MAPA_LOJAS.items():
-            col_cfg[loja] = st.column_config.NumberColumn(novo_nome, format="%d", min_value=0, step=1)
+            col_cfg[loja] = st.column_config.TextColumn(novo_nome)
 
         df_editado = st.data_editor(
             df_exibir,
@@ -692,7 +715,8 @@ if perfil_navegacao == "Separação e Fechamento":
                 for _, row_edit in df_editado.iterrows():
                     mask = (df_to_save["Fornecedor"] == row_edit["Fornecedor"]) & (df_to_save["Código"] == row_edit["Código"])
                     for loja in LOJAS:
-                        df_to_save.loc[mask, loja] = row_edit[loja]
+                        # Salva o texto que foi alterado pelo admin
+                        df_to_save.loc[mask, loja] = str(row_edit[loja])
                 
                 salvar_pedidos(df_to_save)
                 st.success("✅ Pedidos salvos na nuvem com sucesso!")
@@ -780,19 +804,17 @@ elif perfil_navegacao == "Visão das Lojas":
 
     df_all = carregar_pedidos()
     
-    # Prepara as colunas que a loja vai ver e editar
     df_loja_view = pd.merge(
         df_cat_loja[["Fornecedor", "Código", "Descrição"]],
         df_all[["Fornecedor", "Código", loja_selecionada]],
         on=["Fornecedor", "Código"],
         how="left"
     )
-    df_loja_view[loja_selecionada] = df_loja_view[loja_selecionada].fillna(0).astype(int)
+    # Garante que a coluna continue como string
+    df_loja_view[loja_selecionada] = df_loja_view[loja_selecionada].fillna("0").astype(str)
     
-    # Renomeando a coluna de quantidade
     df_loja_view = df_loja_view.rename(columns={loja_selecionada: "Qtde"})
 
-    # Puxar Estoque do Banco com a soma de estoque1 + estoque6
     try:
         conn_pg = st.connection("banco_erp", type="sql")
         mapa_banco_erp = {
@@ -827,21 +849,16 @@ elif perfil_navegacao == "Visão das Lojas":
         df_loja_view["Estoque"] = 0
 
     df_loja_view["Estoque"] = df_loja_view["Estoque"].fillna(0).astype(int)
-    
-    # Reordenando para o usuário
     df_loja_view = df_loja_view[["Fornecedor", "Código", "Descrição", "Estoque", "Qtde"]]
 
     with st.container(border=True):
-        # --- BARRA DE BUSCA ---
         termo_busca_loja = st.text_input("🔍 Buscar Produto (por Código ou Nome):", placeholder="Digite aqui para filtrar a lista abaixo...", key="busca_lojas")
         if termo_busca_loja:
             mask = df_loja_view["Descrição"].str.contains(termo_busca_loja, case=False, na=False) | \
                    df_loja_view["Código"].astype(str).str.contains(termo_busca_loja, case=False, na=False)
             df_loja_view = df_loja_view[mask]
             st.caption("⚠️ *Aviso: Salve o seu pedido antes de limpar ou alterar a busca, para não perder o que foi digitado.*")
-        # ---------------------------
 
-        # Cálculo Dinâmico de Altura
         altura_dinamica = min(600, max(100, int(len(df_loja_view) * 35.5) + 42))
 
         col_cfg_loja = {
@@ -849,7 +866,8 @@ elif perfil_navegacao == "Visão das Lojas":
             "Código":     st.column_config.NumberColumn("Cód.", width=80, format="%d", disabled=True),
             "Descrição":  st.column_config.TextColumn("Produto", width=300, disabled=True),
             "Estoque":    st.column_config.NumberColumn("📦 Estoque", width=100, format="%d", disabled=True),
-            "Qtde":       st.column_config.NumberColumn("🛒 Qtde", width=120, min_value=0, step=1),
+            # Qtde transformada em TextColumn para aceitar cx, und, kg
+            "Qtde":       st.column_config.TextColumn("🛒 Qtde", width=120),
         }
 
         with st.container():
@@ -862,14 +880,12 @@ elif perfil_navegacao == "Visão das Lojas":
                 key=f"loja_editor_{st.session_state['reset_counter_padconf']}"
             )
             
-        # --- CAMPO ÚNICO DE OBSERVAÇÃO ---
         df_obs_atual = carregar_obs()
         obs_existente = df_obs_atual.loc[df_obs_atual["Loja"] == loja_selecionada, "Observacao"].values
         obs_texto_inicial = obs_existente[0] if len(obs_existente) > 0 else ""
         
         st.write("<br>", unsafe_allow_html=True)
         nova_obs = st.text_area("📝 Observação Geral da Loja", value=obs_texto_inicial, height=80, placeholder="Caso necessite, digite alguma observação geral para esse pedido...")
-        # ---------------------------------
 
         df_imprimir = df_editado.copy()
         df_imprimir = df_imprimir.rename(columns={"Estoque": "Est.", "Qtde": "Ped."})
@@ -886,9 +902,11 @@ elif perfil_navegacao == "Visão das Lojas":
 <b>OBSERVAÇÃO GERAL:</b> {nova_obs}
 </div>""", unsafe_allow_html=True)
 
-        itens_com_pedido = int((df_editado["Qtde"] > 0).sum())
+        # Na hora de calcular os totais de cobertura, limpamos as letras e usamos os números reais
+        df_editado_nums = df_editado["Qtde"].apply(extrair_numero_quantidade)
+        itens_com_pedido = int((df_editado_nums > 0).sum())
         total_itens      = len(df_loja_view) 
-        total_unidades   = int(df_editado["Qtde"].sum())
+        total_unidades   = int(df_editado_nums.sum())
         pct              = round(itens_com_pedido / total_itens * 100) if total_itens else 0
 
         st.divider()
@@ -917,21 +935,20 @@ elif perfil_navegacao == "Visão das Lojas":
         with col_btn:
             st.write("<br>", unsafe_allow_html=True)
             if st.button("💾 Salvar Pedido e OBS", type="primary", use_container_width=True):
-                # Salva Peças
                 df_main = carregar_pedidos()
                 for _, row in df_editado.iterrows():
                     mask = (df_main["Fornecedor"] == row["Fornecedor"]) & (df_main["Código"] == row["Código"])
                     if mask.any():
-                        df_main.loc[mask, loja_selecionada] = row["Qtde"]
+                        # Salva na nuvem EXATAMENTE o que o usuário escreveu (ex: '01 cx')
+                        df_main.loc[mask, loja_selecionada] = str(row["Qtde"])
                     else:
                         nova_linha = {"Fornecedor": row["Fornecedor"], "Código": row["Código"], "Descrição": row["Descrição"]}
                         for l in LOJAS: 
-                            nova_linha[l] = 0
-                        nova_linha[loja_selecionada] = row["Qtde"]
+                            nova_linha[l] = "0"
+                        nova_linha[loja_selecionada] = str(row["Qtde"])
                         df_main = pd.concat([df_main, pd.DataFrame([nova_linha])], ignore_index=True)
                 salvar_pedidos(df_main)
                 
-                # Salva OBS Geral
                 df_obs_save = carregar_obs()
                 mask_obs = df_obs_save["Loja"] == loja_selecionada
                 if mask_obs.any():
@@ -975,7 +992,10 @@ elif perfil_navegacao == "Visão por Fornecedor (Resumo)":
             colunas_presentes = LOJAS
             
             df_forn_view = df_forn[["Código", "Descrição"] + colunas_presentes].copy()
-            df_forn_view["TOTAL"] = df_forn_view[colunas_presentes].sum(axis=1)
+            
+            # Para somar, usamos a função de limpar texto na hora, mas mantemos o visual original para a tabela
+            df_forn_nums = df_forn_view[colunas_presentes].applymap(extrair_numero_quantidade)
+            df_forn_view["TOTAL"] = df_forn_nums.sum(axis=1)
 
             lojas_renomeadas = {l: MAPA_LOJAS[l] for l in colunas_presentes}
             df_forn_view = df_forn_view.rename(columns=lojas_renomeadas)
@@ -986,8 +1006,9 @@ elif perfil_navegacao == "Visão por Fornecedor (Resumo)":
                 "Descrição": st.column_config.TextColumn("Produto", disabled=False),
                 "TOTAL":     st.column_config.NumberColumn("TOTAL", width=80, format="%d", disabled=True),
             }
+            # Lojas como texto para ver os 'cx' e 'und' na tela final do admin
             for c in lojas_cols_renomeadas:
-                col_cfg_forn[c] = st.column_config.NumberColumn(c, format="%d", disabled=False, min_value=0)
+                col_cfg_forn[c] = st.column_config.TextColumn(c, disabled=False)
 
             altura = min(600, max(100, int(len(df_forn_view) * 35.5) + 42))
 
@@ -1053,7 +1074,6 @@ elif perfil_navegacao == "Visão por Fornecedor (Resumo)":
     df_obs_print = carregar_obs()
     df_obs_filtrado = df_obs_print[df_obs_print["Observacao"].str.strip() != ""]
     
-    # Unifica as informações para que tanto CSV quanto Excel usem os mesmos dados
     df_export = pd.DataFrame()
     for forn in nomes_forn:
         df_f = df_all[df_all["Fornecedor"] == forn].copy()
@@ -1062,7 +1082,9 @@ elif perfil_navegacao == "Visão por Fornecedor (Resumo)":
             
     if not df_export.empty:
         df_export = df_export[["Código", "Descrição", "Fornecedor"] + LOJAS]
-        df_export["TOTAL GERAL"] = df_export[LOJAS].sum(axis=1)
+        df_export_nums = df_export[LOJAS].applymap(extrair_numero_quantidade)
+        df_export["TOTAL GERAL"] = df_export_nums.sum(axis=1)
+        
         cols_final_export = ["Código", "Descrição", "Fornecedor"] + LOJAS + ["TOTAL GERAL"]
         df_export = df_export[cols_final_export]
         df_export = df_export.rename(columns=MAPA_LOJAS)
@@ -1123,7 +1145,6 @@ elif perfil_navegacao == "Catálogo de Produtos":
     df_catalogo = carregar_catalogo_padconf()
     df_editor_input = df_catalogo.drop(columns=["Descrição"], errors="ignore")
 
-    # 🧹 Limpando espaços invisíveis para evitar que a categoria suma da tela
     if "Fornecedor" in df_editor_input.columns:
         df_editor_input["Fornecedor"] = df_editor_input["Fornecedor"].astype(str).str.strip()
 
@@ -1141,7 +1162,6 @@ elif perfil_navegacao == "Catálogo de Produtos":
     ordem_colunas = ["Fornecedor", "Código", "Descrição Oficial", "Nome Personalizado"] + LOJAS
     df_editor_input = df_editor_input[ordem_colunas]
     
-    # Busca
     termo_busca_cat = st.text_input("🔍 Buscar Produto:", placeholder="Filtrar por código, descrição ou categoria...", key="busca_cat")
     if termo_busca_cat:
         mask = df_editor_input["Descrição Oficial"].str.contains(termo_busca_cat, case=False, na=False) | \
@@ -1152,15 +1172,12 @@ elif perfil_navegacao == "Catálogo de Produtos":
     altura_dinamica_cat = min(600, max(100, int(len(df_editor_input) * 35.5) + 42))
 
     with st.container(border=True):
-
-        # 🔥 Opções Dinâmicas: Pega o que está no banco e junta com o padrão
         categorias_banco = df_editor_input["Fornecedor"].unique().tolist()
         categorias_padrao = [
             "RZ Foods ( ITAIQUARA )", "Coferpan ( 28 Dias )", "Harald", 
             "Reforpan Salware", "Nestle", "TRIPTEM", "675576 - Peniel", "CD"
         ]
         
-        # Remove duplicatas e espaços em branco vazios, depois organiza em ordem alfabética
         opcoes_forn = sorted(list(set([c for c in (categorias_banco + categorias_padrao) if c.strip() != ""])))
 
         col_cfg_cat = {
@@ -1189,7 +1206,6 @@ elif perfil_navegacao == "Catálogo de Produtos":
             if st.button("💾 Salvar Catálogo", type="primary", use_container_width=True):
                 df_to_save = carregar_catalogo_padconf().drop(columns=["Descrição"], errors="ignore")
                 
-                # Mescla a edição baseada no código
                 for _, row in edited_cat.iterrows():
                     mask = (df_to_save["Código"] == row["Código"]) & (df_to_save["Fornecedor"] == row["Fornecedor"])
                     if mask.any():
