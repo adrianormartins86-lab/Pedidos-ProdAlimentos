@@ -589,8 +589,8 @@ with st.sidebar:
 
     df_ped = carregar_pedidos()
     if not df_ped.empty and set(LOJAS).issubset(df_ped.columns):
-        # Transforma tudo para numero (limpando letras) para ver se tem item preenchido
-        temp_sum = df_ped[LOJAS].applymap(extrair_numero_quantidade)
+        # Transforma tudo para numero (limpando letras) para ver se tem item preenchido usando .map (novo pandas)
+        temp_sum = df_ped[LOJAS].map(extrair_numero_quantidade)
         total_preenchidos = (temp_sum > 0).any(axis=1).sum()
     else:
         total_preenchidos = 0
@@ -659,8 +659,8 @@ if perfil_navegacao == "Separação e Fechamento":
             st.warning("A base de pedidos está vazia. Cadastre produtos no Catálogo primeiro.")
             st.stop()
 
-        # Cria uma cópia com apenas os valores numéricos para poder somar o Total Geral
-        df_num = df_base[LOJAS].applymap(extrair_numero_quantidade)
+        # Cria uma cópia com apenas os valores numéricos para poder somar o Total Geral (usando .map para pandas novos)
+        df_num = df_base[LOJAS].map(extrair_numero_quantidade)
         df_base["TOTAL GERAL"] = df_num.sum(axis=1)
 
         cols_order = ["Fornecedor", "Código", "Descrição"] + LOJAS + ["TOTAL GERAL"]
@@ -993,8 +993,8 @@ elif perfil_navegacao == "Visão por Fornecedor (Resumo)":
             
             df_forn_view = df_forn[["Código", "Descrição"] + colunas_presentes].copy()
             
-            # Para somar, usamos a função de limpar texto na hora, mas mantemos o visual original para a tabela
-            df_forn_nums = df_forn_view[colunas_presentes].applymap(extrair_numero_quantidade)
+            # Para somar, usamos a função de limpar texto na hora usando .map (novo pandas)
+            df_forn_nums = df_forn_view[colunas_presentes].map(extrair_numero_quantidade)
             df_forn_view["TOTAL"] = df_forn_nums.sum(axis=1)
 
             lojas_renomeadas = {l: MAPA_LOJAS[l] for l in colunas_presentes}
@@ -1082,7 +1082,7 @@ elif perfil_navegacao == "Visão por Fornecedor (Resumo)":
             
     if not df_export.empty:
         df_export = df_export[["Código", "Descrição", "Fornecedor"] + LOJAS]
-        df_export_nums = df_export[LOJAS].applymap(extrair_numero_quantidade)
+        df_export_nums = df_export[LOJAS].map(extrair_numero_quantidade)
         df_export["TOTAL GERAL"] = df_export_nums.sum(axis=1)
         
         cols_final_export = ["Código", "Descrição", "Fornecedor"] + LOJAS + ["TOTAL GERAL"]
